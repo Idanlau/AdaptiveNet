@@ -162,39 +162,65 @@ class cosine_al_seqNet(nn.Module):
 
 class multi_al_seqNet(nn.Module):
     def __init__(self, inDims, outDims, seqL, w=5, num_heads=8):
-
         super(multi_al_seqNet, self).__init__()
         self.inDims = inDims
         self.first_self_attention_layer = SelfAttentionLayer(4096)
         self.second_self_attention_layer = SelfAttentionLayer(4096)
         self.w = w
         self.first_conv = nn.Conv1d(inDims, outDims, kernel_size=3)
-        self.second_conv = nn.Conv1d(inDims, outDims, kernel_size=3)
-
+        self.second_conv = nn.Conv1d(outDims, outDims, kernel_size=3)  # Note: inDims changed to outDims
+        self.first_bn = nn.BatchNorm1d(outDims)  # BatchNorm after first conv
+        self.second_bn = nn.BatchNorm1d(outDims)  # BatchNorm after second conv
+        
     def forward(self, x):
         if len(x.shape) < 3:
-            x = x.unsqueeze(1) # convert [B,C] to [B,1,C]
+            x = x.unsqueeze(1)  # convert [B,C] to [B,1,C]
         
-        conv_layers = [self.first_conv, self.second_conv]
-        attention_layers = [self.first_self_attention_layer, self.second_self_attention_layer]
+        # print("before 1st conv: ",x.shape)
+        # First Convolution -> BatchNorm -> Activation -> Self-Attention
+        x = x.permute(0, 2, 1)  # from [B, T, C] to [B, C, T]
+        x = self.first_conv(x)  # Apply first conv layer
+        x = self.first_bn(x)    # Apply BatchNorm
+        x = F.relu(x)           # Apply ReLU activation
 
-        for i in range(2):  # Looping twice
-            x = x.permute(0, 2, 1)  # from [B, T, C] to [B, C, T]
-            x = conv_layers[i](x)  # Apply conv layer
-            print(f"after {i} conv: ", x.shape)
+        # print("after 1st conv: ",x.shape)
 
-            x = x.permute(0, 2, 1)  # Permute back to [B, T, C]
-            # print("permute again: ", x.shape)
+        x = x.permute(0, 2, 1)  # Permute back to [B, T, C]
 
-            output = torch.zeros_like(x)
-            for idx in range(len(x)):
-                al_x = x[idx]  # Getting the individual example in the batch
-                al_x = attention_layers[i](al_x)  # Apply self-attention layer, adding batch dim
-                output[idx] = al_x.squeeze(0)  # Remove batch dim added earlier
+        # print("before 1st attention: ",x.shape)
 
-            x = output
+        output = torch.zeros_like(x)
+        for idx in range(len(x)):
+            al_x = x[idx]
+            al_x = self.first_self_attention_layer(al_x)
+            output[idx] = al_x
+        x = output # Apply first self-attention layer
+
+        # print("after 1st attention: ",x.shape)
+        
+        # Second Convolution -> BatchNorm -> Activation -> Self-Attention
+        x = x.permute(0, 2, 1)  # from [B, T, C] to [B, C, T]
+        x = self.second_conv(x)  # Apply second conv layer
+        x = self.second_bn(x)    # Apply BatchNorm
+        x = F.relu(x)            # Apply ReLU activation
+
+        # print("after 2nd conv: ",x.shape)
+
+        x = x.permute(0, 2, 1)   # Permute back to [B, T, C]
+
+        # print("before 2nd attention: ",x.shape)
+        
+        output = torch.zeros_like(x)
+        for idx in range(len(x)):
+            al_x = x[idx]
+            al_x = self.second_self_attention_layer(al_x)
+            output[idx] = al_x
+        x = output
 
         x = x.permute(0,2,1) # shape: [24,4096,x]
+
+        # print("after 2nd attention and permute: ",x.shape)
+
         mean_pool = nn.AdaptiveAvgPool1d(1)
         x = mean_pool(x)
         x = x.squeeze(-1)
