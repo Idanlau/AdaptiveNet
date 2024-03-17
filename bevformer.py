@@ -9,60 +9,75 @@ class TemporalSelfAttention(nn.Module):
         self.heads = heads
         self.head_dim = embed_size // heads
 
-        assert (
-            self.head_dim * heads == embed_size
-        ), "Embed size needs to be divisible by heads"
+        assert self.head_dim * heads == embed_size, "Embed size needs to be divisible by heads"
 
-        self.values = nn.Linear(self.head_dim, self.head_dim, bias=False)
-        self.keys = nn.Linear(self.head_dim, self.head_dim, bias=False)
-        self.queries = nn.Linear(self.head_dim, self.head_dim, bias=False)
-        self.fc_out = nn.Linear(heads * self.head_dim, embed_size)
+        self.values = nn.Linear(embed_size, embed_size, bias=False)
+        self.keys = nn.Linear(embed_size, embed_size, bias=False)
+        self.queries = nn.Linear(embed_size, embed_size, bias=False)
+        self.fc_out = nn.Linear(embed_size, embed_size)
 
-    def forward(self, values, keys, query, mask):
-        # Get number of training examples
+    def forward(self, prev_seq, query):
         N = query.shape[0]
+        value_len, key_len, query_len = prev_seq.shape[1], prev_seq.shape[1], query.shape[1]
 
-        # Split the embedding into self.heads different pieces
-        value_len, key_len, query_len = values.shape[1], keys.shape[1], query.shape[1]
+        # Process inputs
+        values = self.values(prev_seq).view(N, value_len, self.heads, self.head_dim)
+        keys = self.keys(prev_seq).view(N, key_len, self.heads, self.head_dim)
+        queries = self.queries(query).view(N, query_len, self.heads, self.head_dim)
 
-        # Split the embedding into self.heads
-        values = values.reshape(N, value_len, self.heads, self.head_dim)
-        keys = keys.reshape(N, key_len, self.heads, self.head_dim)
-        queries = query.reshape(N, query_len, self.heads, self.head_dim)
-
-        values = self.values(values)
-        keys = self.keys(keys)
-        queries = self.queries(queries)
-
-        # Einsum does matrix mult. for query*keys for each training example
-        # with every other training example, don't be confused by einsum
-        # it's just how we get the QK^T operation to get our attention matrix
+        # Compute the attention scores
         attention = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
 
-        # Optional mask for the attention. It blocks the model from paying attention to future tokens
-        # in the sequence which is important for tasks like causal language modeling.
-        if mask is not None:
-            attention = attention.masked_fill(mask == 0, float("-1e20"))
+        # Softmax to get the attention weights
+        attention = F.softmax(attention / (self.embed_size ** (1 / 2)), dim=-1)
 
-        attention = F.softmax(attention / (self.embed_size ** (1 / 2)), dim=3)
-
+        # Apply attention to values
         out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(
             N, query_len, self.heads * self.head_dim
         )
 
+        # Final linear transformation
         out = self.fc_out(out)
         return out
 
+
 class SpatialCrossAttention(nn.Module):
-    # This would be similar to the TemporalSelfAttention class but
-    # would handle the cross attention mechanism between different feature spaces
-    # like history BEV and current BEV Queries Q
-    pass
+    def __init__(self, embed_size, heads):
+        super(SpatialCrossAttention, self).__init__()
+        self.heads = heads
+        self.embed_size = embed_size
+
+        self.values = nn.Linear(embed_size, embed_size, bias=False)
+        self.keys = nn.Linear(embed_size, embed_size, bias=False)
+        self.queries = nn.Linear(embed_size, embed_size, bias=False)
+        self.fc_out = nn.Linear(embed_size, embed_size)
+
+        self.scale = torch.sqrt(torch.FloatTensor([embed_size // heads]))
+
+    def forward(self, value, key, query):
+        N = query.shape[0]
+        value_len, key_len, query_len = value.shape[1], key.shape[1], query.shape[1]
+
+        # Split the embedding into self.heads different pieces
+        values = self.values(value).view(N, value_len, self.heads, self.embed_size // self.heads)
+        keys = self.keys(key).view(N, key_len, self.heads, self.embed_size // self.heads)
+        queries = self.queries(query).view(N, query_len, self.heads, self.embed_size // self.heads)
+
+        # Attention mechanism
+        energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys]) / self.scale
+        attention = torch.softmax(energy, dim=-1)
+
+        out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(N, query_len, self.embed_size)
+        out = self.fc_out(out)
+        return out
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, embed_size, heads):
         super(TransformerBlock, self).__init__()
-        self.attention = TemporalSelfAttention(embed_size, heads)
+        self.self_temp_attention = TemporalSelfAttention(embed_size, heads)
+        self.spatial_cross_attention = SpatialCrossAttention(embed_size, heads)
+
         self.norm1 = nn.LayerNorm(embed_size)
         self.norm2 = nn.LayerNorm(embed_size)
 
@@ -72,20 +87,41 @@ class TransformerBlock(nn.Module):
             nn.Linear(2 * embed_size, embed_size),
         )
 
-    def forward(self, value, key, query, mask, curr_seq=0, prev_seq=0): # TODO: should be taking current and previous sequence
-        attention = self.attention(value, key, query, mask)
-
-        # Add skip connection, run through normalization and finally dropout
+    """
+    Forwarding the query through neural network architecture
+    params: prev_seq (previous sequence(t-1)), query (current (t), to be trained), 
+            img_ft (corresponding image features of the query)
+    return: out (trained query)
+    """
+    def forward(self, prev_seq, query, img_ft):
+        # Self-attention on the query
+        attention = self.self_temp_attention(prev_seq, prev_seq, query)
+        # Apply normalization right after self-attention
         x = self.norm1(attention + query)
+        
+        # Spatial cross-attention using the normalized output of self-attention as query
+        cross_attention = self.spatial_cross_attention(img_ft, img_ft, x)
+        # Normalize after cross-attention
+        x = self.norm2(cross_attention + x)
+
+        # Feed forward network
         forward = self.feed_forward(x)
-        out = self.norm2(forward + x)
+        # Normalize after feed forward
+        out = self.norm3(forward + x)
+
         return out
 
-# Assuming the embed_size and heads are defined
-embed_size = 256  # example value
-heads = 8  # example value
 
-# Example of creating one block of the model
+# Example initialization
+embed_size = 512  # Example embedding size
+heads = 8  # Example number of heads
 transformer_block = TransformerBlock(embed_size, heads)
 
-# You would use this block as a part of your model, and the output of one block can be passed as the input to the next.
+# Example tensors for the forward pass
+# Assume batch size of B, sequence length of L, and feature dimension matching embed_size
+prev_seq = torch.rand(B, L, embed_size)  # Previous sequence embeddings
+query = torch.rand(B, L, embed_size)  # Current sequence embeddings (query)
+img_ft = torch.rand(B, L, embed_size)  # Image features corresponding to the current sequence
+
+# Forward pass through the transformer block
+output = transformer_block(prev_seq, query, img_ft)
