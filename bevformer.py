@@ -2,6 +2,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class Flatten(nn.Module):
+    def forward(self, input):
+        return input.view(input.size(0), -1)
+
+class L2Norm(nn.Module):
+    def __init__(self, dim=1):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return F.normalize(input, p=2, dim=self.dim)
+
 class TemporalSelfAttention(nn.Module):
     def __init__(self, embed_size, heads):
         super(TemporalSelfAttention, self).__init__()
@@ -14,13 +26,18 @@ class TemporalSelfAttention(nn.Module):
         self.values = nn.Linear(embed_size, embed_size, bias=False)
         self.keys = nn.Linear(embed_size, embed_size, bias=False)
         self.queries = nn.Linear(embed_size, embed_size, bias=False)
-        self.fc_out = nn.Linear(embed_size, embed_size)
 
     def forward(self, prev_seq, query):
         N = query.shape[0]
         value_len, key_len, query_len = prev_seq.shape[1], prev_seq.shape[1], query.shape[1]
-
         # Process inputs
+        print("N size: ",N)
+        print("Value len: ",value_len)
+
+        """
+        TODO: Check this implementation of attention layers figure out einsum and everything else
+        """
+        
         values = self.values(prev_seq).view(N, value_len, self.heads, self.head_dim)
         keys = self.keys(prev_seq).view(N, key_len, self.heads, self.head_dim)
         queries = self.queries(query).view(N, query_len, self.heads, self.head_dim)
@@ -36,8 +53,6 @@ class TemporalSelfAttention(nn.Module):
             N, query_len, self.heads * self.head_dim
         )
 
-        # Final linear transformation
-        out = self.fc_out(out)
         return out
 
 
@@ -72,14 +87,15 @@ class SpatialCrossAttention(nn.Module):
         return out
 
 
-class TransformerBlock(nn.Module):
-    def __init__(self, embed_size, heads):
-        super(TransformerBlock, self).__init__()
+class BevFormer(nn.Module):
+    def __init__(self, embed_size, heads, seqL):
+        super(BevFormer, self).__init__()
         self.self_temp_attention = TemporalSelfAttention(embed_size, heads)
         self.spatial_cross_attention = SpatialCrossAttention(embed_size, heads)
 
         self.norm1 = nn.LayerNorm(embed_size)
         self.norm2 = nn.LayerNorm(embed_size)
+        self.norm3 = nn.LayerNorm(embed_size)
 
         self.feed_forward = nn.Sequential(
             nn.Linear(embed_size, 2 * embed_size),
@@ -94,8 +110,12 @@ class TransformerBlock(nn.Module):
     return: out (trained query)
     """
     def forward(self, prev_seq, query, img_ft):
+        print("prev_seq shape: ",prev_seq.shape)
+        print("query shape: ",query.shape)
+        print("img_ft shape: ",img_ft.shape)
         # Self-attention on the query
-        attention = self.self_temp_attention(prev_seq, prev_seq, query)
+        attention = self.self_temp_attention(prev_seq, query)
+        print("past self_attention")
         # Apply normalization right after self-attention
         x = self.norm1(attention + query)
         
@@ -112,16 +132,32 @@ class TransformerBlock(nn.Module):
         return out
 
 
-# Example initialization
-embed_size = 512  # Example embedding size
-heads = 8  # Example number of heads
-transformer_block = TransformerBlock(embed_size, heads)
+class CustomBevformerPooling(nn.Module):
+    def __init__(self, embed_size, heads, seqL, outDims):
+        super(CustomBevformerPooling, self).__init__()
+        self.bevFormer = BevFormer(embed_size=embed_size, heads=heads, seqL=seqL)
+        self.flatten = Flatten()  # Assuming Flatten() is a defined module
+        self.l2norm = L2Norm()  # Assuming L2Norm() is a defined module
 
-# Example tensors for the forward pass
-# Assume batch size of B, sequence length of L, and feature dimension matching embed_size
-prev_seq = torch.rand(B, L, embed_size)  # Previous sequence embeddings
-query = torch.rand(B, L, embed_size)  # Current sequence embeddings (query)
-img_ft = torch.rand(B, L, embed_size)  # Image features corresponding to the current sequence
+    def forward(self, prev_seq, query, img_ft):
+        x = self.bevFormer(prev_seq, query, img_ft)
+        x = self.flatten(x)
+        x = self.l2norm(x)
+        return x
 
-# Forward pass through the transformer block
-output = transformer_block(prev_seq, query, img_ft)
+
+# # Example initialization
+# embed_size = 4096  # Example embedding size
+# heads = 8  # Example number of heads
+# transformer_block = BevFormer(embed_size, heads,seqL=10)
+# B=24
+# L=10
+# # Example tensors for the forward pass
+# # Assume batch size of B, sequence length of L, and feature dimension matching embed_size
+# prev_seq = torch.rand(B, L, embed_size)  # Previous sequence embeddings
+# query = torch.rand(B, L, embed_size)  # Current sequence embeddings (query)
+# img_ft = torch.rand(B, L, embed_size)  # Image features corresponding to the current sequence 
+
+# # Forward pass through the transformer block
+# output = transformer_block(prev_seq, query, img_ft)
+# print(output.shape)

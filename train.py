@@ -3,10 +3,13 @@ from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Subset
 from tqdm import tqdm
 import numpy as np
+import os
 from os.path import join
 from os import remove
 import h5py
 from math import ceil
+
+
 
 def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_set, whole_train_set, whole_training_data_loader, epoch, writer):
     epoch_loss = 0
@@ -25,6 +28,12 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
 
     nBatches = (len(train_set) + opt.batchSize - 1) // opt.batchSize
 
+    if os.path.exists(train_set.cache):
+        h5_prev = h5py.File(train_set.cache, mode='r') # h5_prev stores the last run of the model over all training data
+    else:
+        tensor_shape = [len(train_set), opt.seqL, opt.outDims]
+        h5_prev = torch.zeros(tensor_shape, dtype=torch.float32) #NOTE: If I initalize 0s will attention layer ever learn?
+
     for subIter in range(subsetN):
     
         print('====> Building Cache')
@@ -37,15 +46,14 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
             h5feat = h5.create_dataset("features", [len(whole_train_set), pool_size], dtype=np.float32) # empty creation of a dataset
             with torch.no_grad():
                 for iteration, (input, indices) in tqdm(enumerate(whole_training_data_loader, 1),total=len(whole_training_data_loader)-1, leave=False):
-                    #print("indices in h5: ", indices)
                     image_encoding = (input).float().to(device)
-                    seq_encoding = model.pool(image_encoding)
-                    h5feat[indices.detach().numpy(), :] = seq_encoding.detach().cpu().numpy()
-                    del input, image_encoding, seq_encoding
+                    for ind in indices:            
+                        seq_encoding = model.pool(prev_seq=h5_prev[ind-1],query=h5_prev[ind],img_ft=image_encoding[ind]) #TODO: fix this call.
+                        h5feat[ind] = seq_encoding.detach().cpu().numpy()
+                        del input, image_encoding, seq_encoding
 
         subset_indices = np.array(subsetIdx[subIter])
         sub_train_set = Subset(dataset=train_set, indices=subset_indices)
-        print(subset_indices)
 
 
         training_data_loader = DataLoader(dataset=sub_train_set, num_workers=opt.threads, 

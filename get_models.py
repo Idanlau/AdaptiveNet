@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from os.path import join, isfile
 import seqNet
+import bevformer
 
 class Flatten(nn.Module):
     def forward(self, input):
@@ -25,48 +26,15 @@ def get_model(opt,encoder_dim,device):
     elif opt.seqL != 1 and opt.pooling.lower() in ['single']:
         raise Exception("For single frame based evaluation, set seqL = 1")
 
-    if opt.pooling.lower() == 'smooth':
-        global_pool = nn.AdaptiveAvgPool2d((1,None))
-        model.add_module('pool', nn.Sequential(*[global_pool, Flatten(), L2Norm()]))
+    if opt.pooling.lower() == 'bevformer':
+        pool_module = bevformer.CustomBevformerPooling(embed_size=opt.outDims, heads=8, seqL=opt.seqL, outDims=opt.outDims)  # Adjust parameters as needed
+        model.add_module('pool', pool_module)
+
 
     elif opt.pooling.lower() == 'seqnet':
         seqFt = seqNet.seqNet(encoder_dim, opt.outDims, opt.seqL, opt.w)
         model.add_module('pool', nn.Sequential(*[seqFt, Flatten(), L2Norm()]))
 
-    elif opt.pooling.lower() == 'cosine_seqnet':
-        seqFt = seqNet.cosine_seqNet(encoder_dim, opt.outDims, opt.seqL, opt.w)
-        model.add_module('pool', nn.Sequential(*[seqFt, Flatten(), L2Norm()]))
-
-    elif opt.pooling.lower() == 'al_seqnet':
-        seqFt = seqNet.al_seqNet(encoder_dim, opt.outDims, opt.seqL, opt.w)
-        model.add_module('pool', nn.Sequential(*[seqFt, Flatten(), L2Norm()]))
-
-    elif opt.pooling.lower() == 'seqnet_al':
-        seqFt = seqNet.seqNet_al(encoder_dim, opt.outDims, opt.seqL, opt.w)
-        model.add_module('pool', nn.Sequential(*[seqFt, Flatten(), L2Norm()]))
-
-    elif opt.pooling.lower() == 'multi_al_seqnet':
-        seqFt = seqNet.multi_al_seqNet(encoder_dim, opt.outDims, opt.seqL, opt.w)
-        model.add_module('pool', nn.Sequential(*[seqFt, Flatten(), L2Norm()]))
-
-    elif opt.pooling.lower() == 'cosine_al_seqnet':
-        seqFt = seqNet.cosine_al_seqNet(encoder_dim, opt.outDims, opt.seqL, opt.w)
-        model.add_module('pool', nn.Sequential(*[seqFt, Flatten(), L2Norm()]))
-
-    elif opt.pooling.lower() == 's1+seqmatch':
-        seqFt = seqNet.seqNet(encoder_dim, opt.outDims, 1, opt.w)
-        model.add_module('pool', nn.Sequential(*[seqFt, Flatten(), L2Norm()]))
-
-    elif opt.pooling.lower() == 'delta':
-        deltaFt = seqNet.Delta(inDims=encoder_dim,seqL=opt.seqL)
-        model.add_module('pool', nn.Sequential(*[deltaFt, L2Norm()]))
-
-    elif opt.pooling.lower() == 'single':
-        single = nn.AdaptiveAvgPool2d((opt.seqL,None)) # shoud have no effect
-        model.add_module('pool', nn.Sequential(*[single, Flatten(), L2Norm()]))
-
-    elif opt.pooling.lower() == 'single+seqmatch':
-        model.add_module('pool', nn.Sequential(*[L2Norm(dim=-1)]))
     else:
         raise ValueError('Unknown pooling type: ' + opt.pooling)
 
