@@ -31,26 +31,26 @@ class TemporalSelfAttention(nn.Module):
         N = query.shape[0]
         value_len, key_len, query_len = prev_seq.shape[1], prev_seq.shape[1], query.shape[1]
         # Process inputs
-        print("N size: ",N)
-        print("Value len: ",value_len)
 
         """
         TODO: Check this implementation of attention layers figure out einsum and everything else
         """
         
-        values = self.values(prev_seq).view(N, value_len, self.heads, self.head_dim)
-        keys = self.keys(prev_seq).view(N, key_len, self.heads, self.head_dim)
-        queries = self.queries(query).view(N, query_len, self.heads, self.head_dim)
+        values = self.values(prev_seq).view(N, self.heads, self.head_dim)
+        keys = self.keys(prev_seq).view(N, self.heads, self.head_dim)
+        queries = self.queries(query).view(N, self.heads, self.head_dim)
 
         # Compute the attention scores
-        attention = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
+        attention = torch.einsum("nqd,nkd->nqd", [queries, keys])
+
+        # print(attention.shape)
 
         # Softmax to get the attention weights
         attention = F.softmax(attention / (self.embed_size ** (1 / 2)), dim=-1)
 
         # Apply attention to values
-        out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(
-            N, query_len, self.heads * self.head_dim
+        out = torch.einsum("nsd,nvd->nsd", [attention, values]).reshape(
+            N, self.heads * self.head_dim
         )
 
         return out
@@ -61,11 +61,13 @@ class SpatialCrossAttention(nn.Module):
         super(SpatialCrossAttention, self).__init__()
         self.heads = heads
         self.embed_size = embed_size
+        self.head_dim = embed_size // heads
+
+        assert self.head_dim * heads == embed_size, "Embed size needs to be divisible by heads"
 
         self.values = nn.Linear(embed_size, embed_size, bias=False)
         self.keys = nn.Linear(embed_size, embed_size, bias=False)
         self.queries = nn.Linear(embed_size, embed_size, bias=False)
-        self.fc_out = nn.Linear(embed_size, embed_size)
 
         self.scale = torch.sqrt(torch.FloatTensor([embed_size // heads]))
 
@@ -74,16 +76,19 @@ class SpatialCrossAttention(nn.Module):
         value_len, key_len, query_len = value.shape[1], key.shape[1], query.shape[1]
 
         # Split the embedding into self.heads different pieces
-        values = self.values(value).view(N, value_len, self.heads, self.embed_size // self.heads)
-        keys = self.keys(key).view(N, key_len, self.heads, self.embed_size // self.heads)
-        queries = self.queries(query).view(N, query_len, self.heads, self.embed_size // self.heads)
+        values = self.values(value).view(N, self.heads, self.head_dim)
+        keys = self.keys(key).view(N, self.heads, self.head_dim)
+        queries = self.queries(query).view(N, self.heads, self.head_dim)
 
         # Attention mechanism
-        energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys]) / self.scale
-        attention = torch.softmax(energy, dim=-1)
+        # TODO: Do we need scale? What is energy?
+        attention = torch.einsum("nqd,nkd->nqd", [queries, keys]) / self.scale
+        attention = F.softmax(attention / (self.embed_size ** (1 / 2)), dim=-1)
 
-        out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(N, query_len, self.embed_size)
-        out = self.fc_out(out)
+        out = torch.einsum("nsd,nvd->nsd", [attention, values]).reshape(
+            N, self.heads * self.head_dim
+        )
+
         return out
 
 
@@ -98,7 +103,7 @@ class BevFormer(nn.Module):
         self.norm3 = nn.LayerNorm(embed_size)
 
         self.feed_forward = nn.Sequential(
-            nn.Linear(embed_size, 2 * embed_size),
+            nn.Linear(embed_size, 2 * embed_size), #TODO: How are these layers used and what is linear for?
             nn.ReLU(),
             nn.Linear(2 * embed_size, embed_size),
         )
@@ -110,12 +115,8 @@ class BevFormer(nn.Module):
     return: out (trained query)
     """
     def forward(self, prev_seq, query, img_ft):
-        print("prev_seq shape: ",prev_seq.shape)
-        print("query shape: ",query.shape)
-        print("img_ft shape: ",img_ft.shape)
         # Self-attention on the query
         attention = self.self_temp_attention(prev_seq, query)
-        print("past self_attention")
         # Apply normalization right after self-attention
         x = self.norm1(attention + query)
         
@@ -128,6 +129,12 @@ class BevFormer(nn.Module):
         forward = self.feed_forward(x)
         # Normalize after feed forward
         out = self.norm3(forward + x)
+
+        out = out.transpose(1,0)
+
+        out = out.mean(dim=-1) #NOTE:Why is the call different than seqnet?
+
+        print(out)
 
         return out
 

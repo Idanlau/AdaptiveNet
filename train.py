@@ -28,11 +28,15 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
 
     nBatches = (len(train_set) + opt.batchSize - 1) // opt.batchSize
 
+    #TODO: Check the mecahnisim of saving caches make sure we are retrieving the right indexes
+    
+
     if os.path.exists(train_set.cache):
         h5_prev = h5py.File(train_set.cache, mode='r') # h5_prev stores the last run of the model over all training data
     else:
-        tensor_shape = [len(train_set), opt.seqL, opt.outDims]
-        h5_prev = torch.zeros(tensor_shape, dtype=torch.float32) #NOTE: If I initalize 0s will attention layer ever learn?
+        tensor_shape = [len(whole_train_set), opt.seqL, opt.outDims]
+        h5_prev = torch.zeros(tensor_shape, dtype=torch.float32) #TODO: Change it to be initalized with the img features
+
 
     for subIter in range(subsetN):
     
@@ -45,12 +49,20 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
                 pool_size = opt.outDims
             h5feat = h5.create_dataset("features", [len(whole_train_set), pool_size], dtype=np.float32) # empty creation of a dataset
             with torch.no_grad():
-                for iteration, (input, indices) in tqdm(enumerate(whole_training_data_loader, 1),total=len(whole_training_data_loader)-1, leave=False):
+                for iteration, (input, indices) in tqdm(enumerate(whole_training_data_loader, 1),total=len(whole_training_data_loader)-1, leave=False): #Where does whole train loader come from?
                     image_encoding = (input).float().to(device)
-                    for ind in indices:            
-                        seq_encoding = model.pool(prev_seq=h5_prev[ind-1],query=h5_prev[ind],img_ft=image_encoding[ind]) #TODO: fix this call.
+                    print("image encode shape: ",image_encoding[0].shape)
+                    print(indices)
+                    img_idx = 0
+                    for ind in indices:         
+                        print("ind: ",ind)
+                        seq_encoding = model.pool(prev_seq=h5_prev[ind-1],query=h5_prev[ind],img_ft=image_encoding[img_idx]) #TODO: Need to fix image_encoding
+                        seq_encoding = seq_encoding.squeeze(-1)
                         h5feat[ind] = seq_encoding.detach().cpu().numpy()
-                        del input, image_encoding, seq_encoding
+                        img_idx += 1
+                        del seq_encoding
+
+                    del input, image_encoding
 
         subset_indices = np.array(subsetIdx[subIter])
         sub_train_set = Subset(dataset=train_set, indices=subset_indices)
@@ -65,18 +77,31 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
 
         model.train()
         for iteration, (query, positives, negatives, 
-                negCounts, indices) in tqdm(enumerate(training_data_loader, startIter),total=len(training_data_loader),leave=False):
+                negCounts, indices) in tqdm(enumerate(training_data_loader, startIter),total=len(training_data_loader),leave=False): #NOTE: check wher train dataloader gets data does it update from h5py?
             loss = 0
 
             if query is None:
-                continue # in case we get an empty batch
+                continue # In case we get an empty batch
+
+            print("indices: ",indices)
 
             B = query.shape[0]
             nNeg = torch.sum(negCounts)
 
-            input = torch.cat([query,positives,negatives]).float()
-            input = input.to(device)
-            seq_encoding = model.pool(input)
+
+            """"
+            How does the input work?
+            """
+
+            # input = torch.cat([query,positives,negatives]).float()
+
+            # print("input length: ",len(input))
+            # input = input.to(device)
+
+            for ind in indices: #Enumerate this and check out the logic of train loader
+                seq_encoding = model.pool(prev_seq=h5_prev[ind-1],query=h5_prev[ind],img_ft=image_encoding[img_idx])  #Get image encoding
+
+
             seqQ, seqP, seqN = torch.split(seq_encoding, [B, B, nNeg])
 
             optimizer.zero_grad()
