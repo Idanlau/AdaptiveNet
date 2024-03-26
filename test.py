@@ -59,7 +59,7 @@ def test(opt, model, encoder_dim, device, eval_set, writer, epoch=0, extract_noE
     with torch.no_grad():
         print('====> Extracting Features')
         pool_size = encoder_dim
-        if opt.pooling.lower() == 'seqnet':
+        if opt.pooling.lower() == 'seqnet' or opt.pooling.lower() == 'bevformer':
             pool_size = opt.outDims
         if 'seqmatch' in opt.pooling.lower():
             dbFeat = torch.empty((len(eval_set), opt.seqL, pool_size),device=device)
@@ -75,12 +75,21 @@ def test(opt, model, encoder_dim, device, eval_set, writer, epoch=0, extract_noE
                 shapeOrig = input.shape
                 input = input.reshape([-1,input.shape[-1]])
                 seq_encoding = model.pool(input).reshape(shapeOrig)
+
             else:
-                seq_encoding = model.pool(input)
+                image_encoding = input
+
+                seq_encoding = []
+                for ind in range(0,len(indices)): 
+                    seq_encoding.append(model.pool(prev_seq=image_encoding[ind],query=image_encoding[ind],img_ft=image_encoding[ind])) #Get image encoding
+                seq_encoding_tensor = torch.stack(seq_encoding).squeeze(-1)
+
+                seq_encoding_tensor = torch.stack(seq_encoding).squeeze(-1)
+
             if 'seqmatch' in opt.pooling.lower():
-                dbFeat[indices,:,:] = seq_encoding
+                dbFeat[indices,:,:] = seq_encoding_tensor
             else:
-                dbFeat[indices, :] = seq_encoding
+                dbFeat[indices, :] = seq_encoding_tensor
             if iteration % 50 == 0 or len(test_data_loader) <= 10:
                 print("==> Batch ({}/{})".format(iteration, 
                     len(test_data_loader)), flush=True)
@@ -141,14 +150,9 @@ def test(opt, model, encoder_dim, device, eval_set, writer, epoch=0, extract_noE
     # compute recall for different loc radii
     rAtL = []
     for locRad in [1,5,10,20,40,100,200]:
-        # print("Rad: ", locRad)
         gtAtL = gtDistsMat <= locRad
         gtAtL = [np.argwhere(gtAtL[:,qIx]).flatten() for qIx in range(gtDistsMat.shape[1] // int(opt.skip.lower()))] 
         recall_val = getRecallAtN(n_values, predictions, gtAtL)
-        # if locRad == 1:
-        #     print("ground truth: ", gtAtL[500:505])
-        #     print("predictions: ",predictions[500:505]) #Fix prediction generations
-        #     print("recall values: ",recall_val)
         rAtL.append(recall_val)
         
     gt = gt[:gtDistsMat.shape[1] // int(opt.skip.lower())]

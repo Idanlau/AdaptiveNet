@@ -37,6 +37,7 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
         tensor_shape = [len(whole_train_set), opt.seqL, opt.outDims]
         h5_prev = torch.zeros(tensor_shape, dtype=torch.float32) #TODO: Change it to be initalized with the img features
 
+    image_encodings_list = []
 
     for subIter in range(subsetN):
     
@@ -51,12 +52,10 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
             with torch.no_grad():
                 for iteration, (input, indices) in tqdm(enumerate(whole_training_data_loader, 1),total=len(whole_training_data_loader)-1, leave=False): #Where does whole train loader come from?
                     image_encoding = (input).float().to(device)
-                    print("image encode shape: ",image_encoding[0].shape)
-                    print(indices)
                     img_idx = 0
-                    for ind in indices:         
-                        print("ind: ",ind)
-                        seq_encoding = model.pool(prev_seq=h5_prev[ind-1],query=h5_prev[ind],img_ft=image_encoding[img_idx]) #TODO: Need to fix image_encoding
+                    for ind in indices:        
+                        image_encodings_list.append(image_encoding[img_idx])
+                        seq_encoding = model.pool(prev_seq=h5_prev[ind-1],query=image_encoding[img_idx],img_ft=image_encoding[img_idx]) #NOTE: query is just going to be default img features
                         seq_encoding = seq_encoding.squeeze(-1)
                         h5feat[ind] = seq_encoding.detach().cpu().numpy()
                         img_idx += 1
@@ -77,32 +76,24 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
 
         model.train()
         for iteration, (query, positives, negatives, 
-                negCounts, indices) in tqdm(enumerate(training_data_loader, startIter),total=len(training_data_loader),leave=False): #NOTE: check wher train dataloader gets data does it update from h5py?
+                negCounts, indices) in tqdm(enumerate(training_data_loader, startIter),total=len(training_data_loader),leave=False):
             loss = 0
 
             if query is None:
                 continue # In case we get an empty batch
 
-            print("indices: ",indices)
 
             B = query.shape[0]
             nNeg = torch.sum(negCounts)
 
-
-            """"
-            How does the input work?
-            """
-
-            # input = torch.cat([query,positives,negatives]).float()
-
-            # print("input length: ",len(input))
-            # input = input.to(device)
-
+            seq_encoding = []
             for ind in indices: #Enumerate this and check out the logic of train loader
-                seq_encoding = model.pool(prev_seq=h5_prev[ind-1],query=h5_prev[ind],img_ft=image_encoding[img_idx])  #Get image encoding
+                seq_encoding.append(model.pool(prev_seq=h5_prev[ind-1],query=image_encodings_list[ind],img_ft=image_encodings_list[ind])) #Get image encoding
 
+            seq_encoding_tensor = torch.stack(seq_encoding).squeeze(-1)
+            
+            seqQ, seqP, seqN = torch.split(seq_encoding_tensor, [B, B, nNeg])
 
-            seqQ, seqP, seqN = torch.split(seq_encoding, [B, B, nNeg])
 
             optimizer.zero_grad()
             
@@ -117,7 +108,7 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
             loss /= nNeg.float().to(device) # normalise by actual number of negatives
             loss.backward()
             optimizer.step()
-            del input, seq_encoding, seqQ, seqP, seqN
+            del seq_encoding_tensor, seq_encoding, seqQ, seqP, seqN
             del query, positives, negatives
 
             batch_loss = loss.item()
@@ -129,7 +120,7 @@ def train(opt, model, encoder_dim, device, dataset, criterion, optimizer, train_
                 writer.add_scalar('Train/Loss', batch_loss, 
                         ((epoch-1) * nBatches) + iteration)
                 writer.add_scalar('Train/nNeg', nNeg, 
-                        ((epoch-1) * nBatches) + iteration)
+                        ((epoch-1) * nBatches) + iteration)       
                 print('Allocated:', torch.cuda.memory_allocated())
                 print('Cached:', torch.cuda.memory_cached())
 

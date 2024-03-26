@@ -9,7 +9,6 @@ prefix_data = "./data/"
 def get_dataset(opt):
 
     if 'nordland' in opt.dataset.lower():
-        print("Here")
         dataset = Dataset('nordland', 'nordland_train_d-40_d2-10.db', 'nordland_test_d-1_d2-1.db', 'nordland_val_d-1_d2-1.db', opt)  # train, test, val structs
         if 'sw' in opt.dataset.lower():
             ref, qry = 'summer', 'winter'

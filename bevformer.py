@@ -113,6 +113,7 @@ class BevFormer(nn.Module):
     params: prev_seq (previous sequence(t-1)), query (current (t), to be trained), 
             img_ft (corresponding image features of the query)
     return: out (trained query)
+    Test: (prev_seq = query,query=query,img_ft=img_ft) TODO: Check
     """
     def forward(self, prev_seq, query, img_ft):
         # Self-attention on the query
@@ -133,8 +134,6 @@ class BevFormer(nn.Module):
         out = out.transpose(1,0)
 
         out = out.mean(dim=-1) #NOTE:Why is the call different than seqnet?
-
-        print(out)
 
         return out
 
